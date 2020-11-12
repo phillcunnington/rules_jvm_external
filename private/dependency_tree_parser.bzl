@@ -72,7 +72,7 @@ def _generate_imports(repository_ctx, dep_tree, explicit_artifacts, neverlink_ar
         srcjar_paths = {}
         for artifact in dep_tree["dependencies"]:
             if get_classifier(artifact["coord"]) == "sources":
-                artifact_path = artifact["file"]
+                artifact_path = artifact.get("coursier_file", artifact["file"])
                 if artifact_path != None and artifact_path not in seen_imports:
                     seen_imports[artifact_path] = True
                     target_label = escape(strip_packaging_and_classifier_and_version(artifact["coord"]))
@@ -89,7 +89,7 @@ def _generate_imports(repository_ctx, dep_tree, explicit_artifacts, neverlink_ar
 
     # Iterate through the list of artifacts, and generate the target declaration strings.
     for artifact in dep_tree["dependencies"]:
-        artifact_path = artifact["file"]
+        artifact_path = artifact.get("coursier_file", artifact["file"])
         simple_coord = strip_packaging_and_classifier_and_version(artifact["coord"])
         target_label = escape(simple_coord)
         alias_visibility = ""
