@@ -2,4 +2,5 @@
 
 exports_files([
     "hasher_deploy.jar",  # built from //tools/java:hasher_deploy.jar
+    "bom_parser_deploy.jar",     # built from //tools/java:bom_parser.jar
 ])

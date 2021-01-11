@@ -32,7 +32,7 @@ def _maven_repository(url, user = None, password = None):
         credentials = {"user": user, "password": password}
         return {"repo_url": url, "credentials": credentials}
 
-def _maven_artifact(group, artifact, version, packaging = None, classifier = None, override_license_types = None, exclusions = None, neverlink = None, testonly = None):
+def _maven_artifact(group, artifact, version = None, packaging = None, classifier = None, override_license_types = None, exclusions = None, neverlink = None, testonly = None):
     """Generates the data map for a Maven artifact given the available information about its coordinates.
 
     Args:
@@ -62,8 +62,9 @@ def _maven_artifact(group, artifact, version, packaging = None, classifier = Non
     maven_artifact = {}
     maven_artifact["group"] = group
     maven_artifact["artifact"] = artifact
-    maven_artifact["version"] = version
 
+    if version != None:
+        maven_artifact["version"] = version
     if packaging != None:
         maven_artifact["packaging"] = packaging
     if classifier != None:
@@ -129,6 +130,8 @@ def _parse_maven_coordinate_string(mvn_coord):
     group = pieces[0]
     artifact = pieces[1]
 
+    if (len(pieces) == 2):
+        return {"group": group, "artifact": artifact}
     if len(pieces) == 3:
         version = pieces[2]
         return {"group": group, "artifact": artifact, "version": version}
@@ -224,10 +227,10 @@ def _artifact_spec_to_json(artifact_spec):
     exclusion_specs_json = (("[" + ", ".join(maybe_exclusion_specs_jsons) + "]") if len(maybe_exclusion_specs_jsons) > 0 else None)
 
     required = "{ \"group\": \"" + artifact_spec["group"] + \
-               "\", \"artifact\": \"" + artifact_spec["artifact"] + \
-               "\", \"version\": \"" + artifact_spec["version"] + "\""
+               "\", \"artifact\": \"" + artifact_spec["artifact"] + "\""
 
-    with_packaging = required + ((", \"packaging\": \"" + artifact_spec["packaging"] + "\"") if artifact_spec.get("packaging") != None else "")
+    with_version = required + ((", \"version\": \"" + artifact_spec["version"] + "\"") if artifact_spec.get("version") != None else "")
+    with_packaging = with_version + ((", \"packaging\": \"" + artifact_spec["packaging"] + "\"") if artifact_spec.get("packaging") != None else "")
     with_classifier = with_packaging + ((", \"classifier\": \"" + artifact_spec["classifier"] + "\"") if artifact_spec.get("classifier") != None else "")
     with_override_license_types = with_classifier + ((", " + _override_license_types_spec_to_json(artifact_spec["override_license_types"])) if artifact_spec.get("override_license_types") != None else "")
     with_exclusions = with_override_license_types + ((", \"exclusions\": " + exclusion_specs_json) if artifact_spec.get("exclusions") != None else "")

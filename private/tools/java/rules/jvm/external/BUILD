@@ -25,3 +25,22 @@ java_test(
         "@maven//:org_hamcrest_hamcrest",
     ],
 )
+
+java_library(
+    name = "bom_parser",
+    srcs = ["MavenBomParser.java"],
+    visibility = [
+        "//private/tools:__subpackages__",
+    ],
+)
+
+java_test(
+    name = "BomParserTest",
+    size = "small",
+    srcs = ["BomParserTest.java"],
+    test_class = "rules.jvm.external.MavenBomParser",
+    deps = [
+        ":bom_parser",
+        "@maven//:org_hamcrest_hamcrest",
+    ],
+)
