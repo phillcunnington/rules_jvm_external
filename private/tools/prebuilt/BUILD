@@ -3,4 +3,5 @@
 exports_files([
     "hasher_deploy.jar",  # built from //private/tools/java:hasher_deploy.jar
     "outdated_deploy.jar",  # built from //private/tools/java/rules/jvm/external/maven:outdated_deploy.jar
+    "bom_parser_deploy.jar",  # built from //tools/java:bom_parser.jar
 ])
