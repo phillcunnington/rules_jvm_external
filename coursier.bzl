@@ -310,9 +310,16 @@ def _get_jq_http_files():
     return lines
 
 def _add_outdated_files(repository_ctx, artifacts, repositories):
+
+    # For time being skipping imported artifacts
+    file_string = ""
+    for artifact in artifacts:
+        if "version" in artifact:
+            file_string = file_string + "\n{}:{}:{}".format(artifact["group"], artifact["artifact"], artifact["version"])
+
     repository_ctx.file(
         "outdated.artifacts",
-        "\n".join(["{}:{}:{}".format(artifact["group"], artifact["artifact"], artifact["version"]) for artifact in artifacts]) + "\n",
+        file_string + "\n",
         executable = False,
     )
 
@@ -642,34 +649,20 @@ def get_coursier_cache_or_default(repository_ctx, use_unsafe_shared_cache):
 
     return default_cache_dir
 
-def make_coursier_dep_tree(
+def _call_coursier(
         repository_ctx,
-        artifacts,
-        excluded_artifacts,
-        repositories,
+        artifact_coordinates,
         version_conflict_policy,
+        artifact_type,
         fail_on_missing_checksum,
+        exclusion_lines,
+        repositories,
+        excluded_artifacts,
         fetch_sources,
         fetch_javadoc,
         use_unsafe_shared_cache,
         timeout,
-        report_progress_prefix = ""):
-    # Set up artifact exclusion, if any. From coursier fetch --help:
-    #
-    # Path to the local exclusion file. Syntax: <org:name>--<org:name>. `--` means minus. Example file content:
-    # com.twitter.penguin:korean-text--com.twitter:util-tunable-internal_2.11
-    # org.apache.commons:commons-math--com.twitter.search:core-query-nodes
-    # Behavior: If root module A excludes module X, but root module B requires X, module X will still be fetched.
-    artifact_coordinates = []
-    exclusion_lines = []
-    for a in artifacts:
-        artifact_coordinates.append(utils.artifact_coordinate(a))
-        if "exclusions" in a:
-            for e in a["exclusions"]:
-                exclusion_lines.append(":".join([a["group"], a["artifact"]]) +
-                                       "--" +
-                                       ":".join([e["group"], e["artifact"]]))
-
+        report_progress_message):
     cmd = _generate_java_jar_command(repository_ctx, repository_ctx.path("coursier"))
     cmd.extend(["fetch"])
 
@@ -719,12 +712,7 @@ def make_coursier_dep_tree(
         # https://github.com/coursier/coursier/blob/1cbbf39b88ee88944a8d892789680cdb15be4714/modules/paths/src/main/java/coursier/paths/CoursierPaths.java#L29-L56
         environment = {"COURSIER_CACHE": str(repository_ctx.path(coursier_cache_location))}
 
-    repository_ctx.report_progress(
-        "%sResolving and fetching the transitive closure of %s artifact(s).." % (
-            report_progress_prefix,
-            len(artifact_coordinates),
-        ),
-    )
+    repository_ctx.report_progress(report_progress_message)
 
     exec_result = repository_ctx.execute(
         cmd,
@@ -735,6 +723,53 @@ def make_coursier_dep_tree(
     if (exec_result.return_code != 0):
         fail("Error while fetching artifact with coursier: " + exec_result.stderr)
 
+
+def make_coursier_dep_tree(
+        repository_ctx,
+        artifacts,
+        excluded_artifacts,
+        repositories,
+        version_conflict_policy,
+        fail_on_missing_checksum,
+        fetch_sources,
+        fetch_javadoc,
+        use_unsafe_shared_cache,
+        timeout,
+        report_progress_prefix="",
+):
+    # Set up artifact exclusion, if any. From coursier fetch --help:
+    #
+    # Path to the local exclusion file. Syntax: <org:name>--<org:name>. `--` means minus. Example file content:
+    # com.twitter.penguin:korean-text--com.twitter:util-tunable-internal_2.11
+    # org.apache.commons:commons-math--com.twitter.search:core-query-nodes
+    # Behavior: If root module A excludes module X, but root module B requires X, module X will still be fetched.
+    artifact_coordinates = []
+    exclusion_lines = []
+    for a in artifacts:
+        artifact_coordinates.append(utils.artifact_coordinate(a))
+        if "exclusions" in a:
+            for e in a["exclusions"]:
+                exclusion_lines.append(":".join([a["group"], a["artifact"]]) +
+                                       "--" +
+                                       ":".join([e["group"], e["artifact"]]))
+
+    _call_coursier(
+        repository_ctx = repository_ctx,
+        artifact_coordinates = artifact_coordinates,
+        version_conflict_policy = version_conflict_policy,
+        artifact_type = ",".join(SUPPORTED_PACKAGING_TYPES + ["src"]),
+        fail_on_missing_checksum = fail_on_missing_checksum,
+        exclusion_lines = exclusion_lines,
+        repositories = repositories,
+        fetch_sources = fetch_sources,
+        fetch_javadoc = fetch_javadoc,
+        excluded_artifacts = excluded_artifacts,
+        use_unsafe_shared_cache = use_unsafe_shared_cache,
+        timeout = timeout,
+        report_progress_message="%sResolving and fetching the transitive closure of %s artifact(s).." % (
+                                            report_progress_prefix, len(artifact_coordinates))
+    )
+
     return _deduplicate_artifacts(json_parse(repository_ctx.read(repository_ctx.path(
         "dep-tree.json",
     ))))
@@ -744,6 +779,132 @@ def _download_jq(repository_ctx):
 
     for (os, value) in JQ_VERSIONS.items():
         repository_ctx.download(value.url, "jq-%s" % os, sha256 = value.sha256, executable = True)
+
+
+def _resolve_bom(
+        repository_ctx,
+        bom,
+        repositories,
+        fail_on_missing_checksum,
+        use_unsafe_shared_cache,
+        timeout,
+        report_progress_prefix=""
+):
+
+    _call_coursier(
+        repository_ctx = repository_ctx,
+        artifact_coordinates = [bom],
+        version_conflict_policy = None,
+        artifact_type = ["pom"],
+        fail_on_missing_checksum = fail_on_missing_checksum,
+        exclusion_lines = [],
+        repositories = repositories,
+        excluded_artifacts = [],
+        fetch_sources = False,
+        fetch_javadoc = False,
+        use_unsafe_shared_cache = use_unsafe_shared_cache,
+        timeout = timeout,
+        report_progress_message="%sResolving and importing BOM: %s.." % (report_progress_prefix, bom)
+    )
+
+    coursier_cache_location = get_coursier_cache_or_default(
+        repository_ctx,
+        True if repository_ctx.attr.name.startswith("unpinned_") else use_unsafe_shared_cache,
+    )
+
+    bom_parser_command = _generate_java_jar_command(
+        repository_ctx,
+        repository_ctx.path(repository_ctx.attr._bom_parser),
+    )
+
+    home_netrc = get_home_netrc_contents(repository_ctx)
+
+    bom_parser_args = [bom, "bom_dependency_management.json", coursier_cache_location]
+    for repository in repositories:
+        index = repository["repo_url"].index("://")
+        i = repository["repo_url"][index + 3:].index("/")
+        host = repository["repo_url"][index + 3:index + 3 + i]
+
+        repo = None
+
+        for entry in home_netrc.splitlines():
+            parts = entry.split(" ")
+            machine = parts[1]
+            login = parts[3]
+            if host == machine:
+                repo = repository["repo_url"].replace("://", "/" + login + "%40")
+                break
+
+        if not repo:
+            repo = repository["repo_url"].replace("://", "/")
+
+        bom_parser_args.append(repo)
+
+    bom_parser_command.extend(bom_parser_args)
+
+    exec_result = repository_ctx.execute(bom_parser_command)
+    if (exec_result.return_code != 0):
+        fail("Error while fetching artifact with coursier: " + exec_result.stderr)
+
+    return json_parse(repository_ctx.read(repository_ctx.path(
+        "bom_dependency_management.json")))
+
+def _create_dict_key(artifact_definition):
+    definition_string = "%s:%s" % (artifact_definition["group"], artifact_definition["artifact"])
+    if "classifier" in artifact_definition:
+        definition_string += ":%s" % artifact_definition["classifier"]
+    return definition_string
+
+def resolve(dependencies, dependency_management):
+    done_deps = []
+    for dependency in dependencies:
+        artifact_definition = dependency
+        dict_key = _create_dict_key(artifact_definition)
+        if "version" not in artifact_definition and dict_key not in dependency_management:
+            fail("No imported artifact definition for %s. Cannot determine artifact version." % dict_key)
+
+        if "exclusions" in artifact_definition:
+            exclusions = artifact_definition["exclusions"]
+        else:
+            exclusions = []
+
+        if "version" in artifact_definition:
+            artifact_import = dependency_management.get(dict_key, {"version": artifact_definition["version"]})
+            version = artifact_import["version"]
+            if "exclusions" in artifact_import:
+                if exclusions:
+                    fail("Attemping to override exclusions for %s. Imported: %s, Override: %s" % (dict_key, artifact_import["exclusions"], exclusions))
+                exclusions = artifact_import["exclusions"]
+        else:
+            artifact_import = dependency_management.get(dict_key)
+            version = artifact_import["version"]
+            if "exclusions" in artifact_import:
+                if exclusions:
+                    fail("Attemping to override exclusions for %s. Imported: %s, Override: %s" % (dict_key, artifact_import["exclusions"], exclusions))
+                exclusions = artifact_import["exclusions"]
+
+        if "version" in artifact_definition and artifact_definition["version"] != artifact_import["version"]:
+            fail("Attemping to override version for %s. Imported: %s, Override: %s" % (dict_key, artifact_import["version"], artifact_definition["version"]))
+
+        if "classifier" in artifact_definition or exclusions or "neverlink" in artifact_definition:
+            dep = maven.artifact(
+                artifact_definition["group"],
+                artifact_definition["artifact"],
+                artifact_import["version"],
+                classifier = artifact_definition["classifier"] if "classifier" in artifact_definition else None,
+                exclusions = exclusions if exclusions else None
+            )
+            if "neverlink" in artifact_definition and artifact_definition["neverlink"]:
+                dep["neverlink"] = True
+            done_deps.append(dep)
+        else:
+            dep = maven.artifact(
+                artifact_definition["group"],
+                artifact_definition["artifact"],
+                artifact_import["version"],
+            )
+            done_deps.append(dep)
+    return done_deps
 
 def _coursier_fetch_impl(repository_ctx):
     # Not using maven_install.json, so we resolve and fetch from scratch.
@@ -790,6 +951,19 @@ def _coursier_fetch_impl(repository_ctx):
     excluded_artifacts = []
     for artifact in repository_ctx.attr.excluded_artifacts:
         excluded_artifacts.append(json_parse(artifact))
+
+    if repository_ctx.attr.bom != "":
+        bom_tree = _resolve_bom(
+            repository_ctx,
+            repository_ctx.attr.bom,
+            repositories,
+            repository_ctx.attr.fail_on_missing_checksum,
+            repository_ctx.attr.use_unsafe_shared_cache,
+            repository_ctx.attr.resolve_timeout,
+        )
+
+        dependency_management = bom_tree["dependency_management"]
+        artifacts = resolve(artifacts, dependency_management)
 
     # Once coursier finishes a fetch, it generates a tree of artifacts and their
     # transitive dependencies in a JSON file. We use that as the source of truth
@@ -1109,11 +1283,13 @@ pinned_coursier_fetch = repository_rule(
 coursier_fetch = repository_rule(
     attrs = {
         "_sha256_hasher": attr.label(default = "//private/tools/prebuilt:hasher_deploy.jar"),
+        "_bom_parser": attr.label(default = "//private/tools/prebuilt:bom_parser_deploy.jar"),
         "_pin": attr.label(default = "//:private/pin.sh"),
         "_compat_repository": attr.label(default = "//:private/compat_repository.bzl"),
         "_outdated": attr.label(default = "//:private/outdated.sh"),
         "repositories": attr.string_list(),  # list of repository objects, each as json
         "artifacts": attr.string_list(),  # list of artifact objects, each as json
+        "bom": attr.string(),
         "fail_on_missing_checksum": attr.bool(default = True),
         "fetch_sources": attr.bool(default = False),
         "fetch_javadoc": attr.bool(default = False),
